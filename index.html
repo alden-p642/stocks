@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NSE Direction Lab</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mu:#667085;--bd:#e3e6eb;--up:#0a8f5b;--dn:#d4352f;--ac:#2f5bea;--wn:#b26a00;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1218;--card:#181c25;--tx:#eceff4;--mu:#98a2b3;--bd:#2a303c;--up:#33c48d;--dn:#ff6b64;--ac:#7c9bff;--wn:#f0b45a;color-scheme:dark}}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0}h2{font-size:15px;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin:12px 0}
+.mu{color:var(--mu);font-size:13px}.warn{color:var(--wn);font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select,button,input[type=file]{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--bd);background:var(--card);color:var(--tx);max-width:100%}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}
+.big{font-size:34px;font-weight:700}.up{color:var(--up)}.dn{color:var(--dn)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.grid div{background:var(--bg);border-radius:10px;padding:8px 10px}.grid b{display:block;font-size:17px}
+canvas{width:100%;height:150px;display:block}
+.sc{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:7px 6px;text-align:right;border-bottom:1px solid var(--bd);white-space:nowrap}th:first-child,td:first-child{text-align:left}
+tr.r{cursor:pointer}
+</style></head><body><main>
+<h1>📈 NSE Direction Lab</h1>
+<div class="mu">Next-day Up/Down probabilities for Indian stocks, with honest walk-forward testing.</div>
+
+<div class="card">
+<div class="row"><select id="sym"></select>
+<button class="p" id="go">Analyze</button></div>
+<div class="row" style="margin-top:8px"><label class="mu">Real data (CSV with Date, Close, Volume):</label><input type="file" id="f" accept=".csv"></div>
+<div class="row" style="margin-top:8px"><label class="mu">All stocks at once (files named like VEDL.NS.csv):</label><input type="file" id="fm" accept=".csv" multiple></div><div class="mu" id="msg"></div>
+<div class="warn" id="src"></div>
+</div>
+
+<div class="card" id="res" hidden>
+<div class="mu" id="title"></div>
+<div class="big" id="dir"></div>
+<canvas id="cv"></canvas>
+<div class="grid" id="g"></div>
+<p id="verdict" style="margin:10px 0 0"></p>
+</div>
+
+<div class="card">
+<h2>Scan all stocks</h2>
+<div class="row"><button id="scan">Run scan</button><span class="mu" id="prog"></span></div>
+<div class="sc"><table id="tb" hidden><thead><tr><th>Stock</th><th>Call</th><th>P(up)</th><th>Test acc.</th><th>Edge?</th></tr></thead><tbody></tbody></table></div>
+</div>
+
+<p class="mu">Method: 8 features (returns, volatility, RSI, MACD, trend, volume) feed a logistic model retrained every 20 days on past data only, then tested on unseen days. Accuracy is shown against the 95% noise band, and the strategy includes 0.1% cost per switch. Educational only, not investment advice. No prediction is guaranteed.</p>
+</main>
+<script>
+const SYMS=["RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","SBIN","BHARTIARTL","ITC","KOTAKBANK","LT","AXISBANK","ASIANPAINT","MARUTI","SUNPHARMA","TITAN","BAJFINANCE","WIPRO","ULTRACEMCO","NTPC","ONGC","TATAMOTORS","TATASTEEL","POWERGRID","M&M","HCLTECH","ADANIENT","COALINDIA","JSWSTEEL","NESTLEIND","VEDL","DCMSHRIRAM","JIOFIN"];
+const $=id=>document.getElementById(id),data={};
+function rng(s){return()=>(s=(s*1664525+1013904223)>>>0)/4294967296}
+function synth(sym){let h=7;for(const ch of sym)h=(h*31+ch.charCodeAt(0))>>>0;const r=rng(h),g=()=>Math.sqrt(-2*Math.log(r()+1e-12))*Math.cos(6.2832*r());
+let p=200+r()*3000,pr=0,vol=.012+r()*.01,d=new Date(2022,0,3),o=[];
+for(let i=0;i<900;i++){while(d.getDay()%6==0)d.setDate(d.getDate()+1);pr=.0003+.05*pr+vol*g();p*=Math.exp(pr);o.push({d:d.toISOString().slice(0,10),c:p,v:1e6*(1+r())});d.setDate(d.getDate()+1)}return o}
+function get(s){return data[s]||(data[s]={rows:synth(s),real:false})}
+function ema(a,k){const m=2/(k+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*m+o[i-1]*(1-m));return o}
+function build(rows){const c=rows.map(r=>r.c),v=rows.map(r=>r.v||0),n=c.length,e12=ema(c,12),e26=ema(c,26),X=[],r1=i=>c[i]/c[i-1]-1;
+for(let i=30;i<n;i++){let g=0,l=0;for(let j=i-13;j<=i;j++){const d=c[j]-c[j-1];d>0?g+=d:l-=d}
+const rsi=l==0?100:100-100/(1+g/l);let m=0,s=0,sm=0,vm=0;for(let j=i-9;j<=i;j++)m+=r1(j)/10;for(let j=i-9;j<=i;j++)s+=(r1(j)-m)**2;
+for(let j=i-19;j<=i;j++){sm+=c[j]/20;vm+=v[j]/20}const vr=vm>0?Math.max(-1,Math.min(2,v[i]/vm-1)):0;
+X.push({i,x:[r1(i),c[i]/c[i-5]-1,c[i]/c[i-10]-1,Math.sqrt(s/10),(rsi-50)/50,(e12[i]-e26[i])/c[i],c[i]/sm-1,vr],y:i<n-1?(c[i+1]>c[i]?1:0):null})}return X}
+function train(S){const d=8,mu=Array(d).fill(0),sd=Array(d).fill(0),N=S.length;
+S.forEach(s=>s.x.forEach((q,k)=>mu[k]+=q/N));S.forEach(s=>s.x.forEach((q,k)=>sd[k]+=(q-mu[k])**2/N));sd.forEach((q,k)=>sd[k]=Math.sqrt(q)||1);
+const Z=S.map(s=>s.x.map((q,k)=>(q-mu[k])/sd[k])),w=Array(d).fill(0);let b=0;
+for(let e=0;e<100;e++){const gw=Array(d).fill(0);let gb=0;
+Z.forEach((z,t)=>{let a=b;for(let k=0;k<d;k++)a+=w[k]*z[k];const er=1/(1+Math.exp(-a))-S[t].y;for(let k=0;k<d;k++)gw[k]+=er*z[k];gb+=er});
+for(let k=0;k<d;k++)w[k]-=.2*(gw[k]/N+.05*w[k]);b-=.2*gb/N}return{w,b,mu,sd}}
+function prob(m,x){let a=m.b;x.forEach((q,k)=>a+=m.w[k]*(q-m.mu[k])/m.sd[k]);return 1/(1+Math.exp(-a))}
+function analyze(rows){const F=build(rows),L=F.filter(f=>f.y!==null),last=F[F.length-1],P=[];
+for(let t=Math.floor(L.length*.5);t<L.length;t+=20){const m=train(L.slice(0,t));for(let u=t;u<Math.min(t+20,L.length);u++)P.push({p:prob(m,L[u].x),y:L[u].y,i:L[u].i})}
+let ok=0,up=0,eq=1,bh=1,pos=0;
+P.forEach(q=>{const pd=q.p>.5?1:0;if(pd==q.y)ok++;if(q.y)up++;const r=rows[q.i+1].c/rows[q.i].c-1;let rr=pd?r:0;if(pd!=pos)rr-=.001;pos=pd;eq*=1+rr;bh*=1+r});
+const n=P.length,acc=ok/n,moe=1.96*Math.sqrt(.25/n),base=Math.max(up,n-up)/n;
+return{p:prob(train(L),last.x),acc,base,n,moe,eq:eq-1,bh:bh-1,edge:acc-.5>moe&&acc>base}}
+const pc=(x,d=1)=>(x*100).toFixed(d)+"%";
+function chart(rows){const cv=$("cv"),dpr=devicePixelRatio||1,W=cv.clientWidth,H=150;cv.width=W*dpr;cv.height=H*dpr;const x=cv.getContext("2d");x.scale(dpr,dpr);
+const c=rows.slice(-200).map(r=>r.c),mn=Math.min(...c),mx=Math.max(...c);x.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--ac");x.lineWidth=2;x.beginPath();
+c.forEach((v,i)=>{const px=i/(c.length-1)*(W-4)+2,py=H-8-(v-mn)/(mx-mn||1)*(H-16);i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke()}
+function show(s){const e=get(s),a=analyze(e.rows),up=a.p>.5,conf=up?a.p:1-a.p;
+const ld=e.rows[e.rows.length-1].d.slice(0,10),old=e.real&&(Date.now()-Date.parse(ld))/864e5>4;$("res").hidden=false;$("title").textContent=s+" · NSE · "+e.rows.length+" days · "+(e.real?"data up to "+ld+(old?" · WARNING: data may be outdated":""):"synthetic demo data");
+$("dir").innerHTML='<span class="'+(up?"up":"dn")+'">'+(up?"▲ UP":"▼ DOWN")+"</span> tomorrow · "+pc(conf,0)+" confidence";
+$("g").innerHTML=[["Test accuracy",pc(a.acc)+" ±"+pc(a.moe)],["Always-guess-majority",pc(a.base)],["Unseen test days",a.n],["Model strategy vs buy-hold",pc(a.eq,0)+" vs "+pc(a.bh,0)]].map(q=>"<div>"+q[0]+"<b>"+q[1]+"</b></div>").join("");
+$("verdict").innerHTML=a.edge?"<b>Some evidence of edge</b> on this sample. Re-test on more years of real data before trusting it.":"<b>No reliable edge detected.</b> Accuracy is within the noise of a coin flip, so treat this call as low-information.";
+chart(e.rows)}
+$("sym").innerHTML=SYMS.map(s=>"<option>"+s+"</option>").join("");
+function note(){const e=get($("sym").value);$("src").textContent=e.real?(e.auto?"Using auto-updated data up to "+e.rows[e.rows.length-1].d.slice(0,10)+".":"Using your uploaded real data."):"Showing synthetic demo data. Upload a real CSV for genuine predictions."}
+$("sym").onchange=note;note();
+$("go").onclick=()=>{$("go").textContent="Training…";setTimeout(()=>{show($("sym").value);$("go").textContent="Analyze"},30)};
+$("f").onchange=ev=>{const f=ev.target.files[0];if(!f)return;f.text().then(t=>{const L=t.trim().split(/\r?\n/),H=L[0].split(",").map(s=>s.trim().replace(/"/g,"").toLowerCase());
+const di=H.findIndex(h=>h.includes("date")),ci=H.indexOf("close")>=0?H.indexOf("close"):H.findIndex(h=>h.includes("close")),vi=H.findIndex(h=>h.includes("vol"));
+if(ci<0){$("src").textContent="CSV needs a Close column.";return}
+let rows=L.slice(1).map(l=>{const p=l.split(",").map(s=>s.replace(/"/g,"").trim());return{d:di>=0?p[di]:"",c:parseFloat(p[ci].replace(/,/g,"")),v:vi>=0?parseFloat(p[vi].replace(/,/g,"")):0}}).filter(r=>r.c>0);
+if(di>=0&&rows.every(r=>!isNaN(Date.parse(r.d))))rows.sort((a,b)=>Date.parse(a.d)-Date.parse(b.d));
+if(rows.length<300){$("src").textContent="Need at least 300 daily rows ("+rows.length+" found).";return}
+data[$("sym").value]={rows,real:true};save();note();$("go").click()})};
+function parse(t){const L=t.trim().split(/\r?\n/),H=L[0].split(",").map(s=>s.trim().replace(/"/g,"").toLowerCase());
+const di=H.findIndex(h=>h.includes("date")),ci=H.indexOf("close")>=0?H.indexOf("close"):H.findIndex(h=>h.includes("close")),vi=H.findIndex(h=>h.includes("vol"));
+if(ci<0)return null;
+let rows=L.slice(1).map(l=>{const p=l.split(",").map(s=>s.replace(/"/g,"").trim());return{d:di>=0?p[di]:"",c:parseFloat((p[ci]||"").replace(/,/g,"")),v:vi>=0?parseFloat((p[vi]||"").replace(/,/g,"")):0}}).filter(r=>r.c>0);
+if(di>=0&&rows.every(r=>!isNaN(Date.parse(r.d))))rows.sort((a,b)=>Date.parse(a.d)-Date.parse(b.d));
+return rows.length>=300?rows:null}
+function save(){try{const o={};for(const s in data)if(data[s].real&&!data[s].auto)o[s]=data[s].rows.map(r=>[r.d,r.c,r.v||0]);localStorage.setItem("nse_real",JSON.stringify(o))}catch(e){}}
+try{const o=JSON.parse(localStorage.getItem("nse_real")||"{}");for(const s in o)data[s]={rows:o[s].map(a=>({d:a[0],c:a[1],v:a[2]})),real:true}}catch(e){}
+note();
+$("fm").onchange=async ev=>{const ok=[],bad=[];
+for(const f of ev.target.files){const base=f.name.toUpperCase().replace(/\.CSV$/,"").replace(/\.NS$|\.BO$/,"").replace(/\s*\(\d+\)$/,"").trim();
+const s=SYMS.find(x=>x===base||x.replace(/[^A-Z]/g,"")===base.replace(/[^A-Z]/g,""));
+const rows=s&&parse(await f.text());if(rows){data[s]={rows,real:true};ok.push(s)}else bad.push(f.name)}
+save();note();$("msg").textContent="Loaded "+ok.length+" stocks"+(bad.length?". Skipped: "+bad.join(", "):"")+"."};
+(async()=>{let n=0;await Promise.all(SYMS.map(async s=>{try{const r=await fetch("csv/"+encodeURIComponent(s)+".NS.csv",{cache:"no-cache"});if(!r.ok)return;const rows=parse(await r.text());if(rows){data[s]={rows,real:true,auto:true};n++}}catch(e){}}));
+if(n){note();$("msg").textContent="Auto-loaded latest data for "+n+" stocks."}})();
+$("scan").onclick=async()=>{const tb=$("tb"),body=tb.querySelector("tbody"),out=[];body.innerHTML="";tb.hidden=false;
+for(let i=0;i<SYMS.length;i++){$("prog").textContent="Training "+(i+1)+"/"+SYMS.length+"…";await new Promise(r=>setTimeout(r,10));out.push({s:SYMS[i],...analyze(get(SYMS[i]).rows)})}
+$("prog").textContent="Done. Tap a row to open it.";out.sort((a,b)=>Math.abs(b.p-.5)-Math.abs(a.p-.5));
+body.innerHTML=out.map(o=>'<tr class="r" data-s="'+o.s+'"><td>'+o.s+(get(o.s).real?"":" (demo)")+'</td><td class="'+(o.p>.5?"up":"dn")+'">'+(o.p>.5?"▲ UP":"▼ DOWN")+"</td><td>"+pc(o.p,0)+"</td><td>"+pc(o.acc)+"</td><td>"+(o.edge?"Maybe":"No")+"</td></tr>").join("");
+body.querySelectorAll("tr").forEach(r=>r.onclick=()=>{$("sym").value=r.dataset.s;note();$("go").click();scrollTo({top:0,behavior:"smooth"})})};
+</script></body></html>
